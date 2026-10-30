@@ -1,0 +1,108 @@
+name: Upload TestFlight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+jobs:
+  upload:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      TEAM_ID: DV65V3ZDUZ
+      APP_ID: com.tnanstar.moviepilot
+      GROUP_ID: group.org.moviepilot.widgets.DV65V3ZDUZ
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build tools
+        run: brew install xcodegen
+      - name: Import signing material
+        env:
+          P12: ${{ secrets.DISTRIBUTION_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DISTRIBUTION_P12_PASSWORD }}
+          APP_PROFILE: ${{ secrets.APP_PROFILE_BASE64 }}
+          WIDGET_PROFILE: ${{ secrets.WIDGET_PROFILE_BASE64 }}
+          ASC_KEY: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          for name in P12 P12_PASSWORD APP_PROFILE WIDGET_PROFILE ASC_KEY ASC_KEY_ID; do
+            test -n "${!name}" || { echo "Missing secret: $name"; exit 1; }
+          done
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/distribution.p12"
+          echo "$ASC_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/distribution.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$APP_PROFILE" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/moviepilot.mobileprovision"
+          echo "$WIDGET_PROFILE" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/moviepilot-widgets.mobileprovision"
+      - name: Configure project and export
+        run: |
+          python3 - <<'PY'
+          import os,pathlib,plistlib,subprocess,datetime
+          import json
+          profiles={}
+          for filename,bundle in [('moviepilot',os.environ['APP_ID']),('moviepilot-widgets',os.environ['APP_ID']+'.widgets')]:
+              p=pathlib.Path.home()/'Library/MobileDevice/Provisioning Profiles'/f'{filename}.mobileprovision'
+              d=plistlib.loads(subprocess.check_output(['security','cms','-D','-i',str(p)]))
+              e=d['Entitlements']
+              assert d['TeamIdentifier']==[os.environ['TEAM_ID']]
+              assert e['application-identifier']==os.environ['TEAM_ID']+'.'+bundle
+              assert os.environ['GROUP_ID'] in e.get('com.apple.security.application-groups',[])
+              assert e.get('beta-reports-active') and not e.get('get-task-allow')
+              assert d['ExpirationDate']>datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+              profiles[bundle]=d['UUID']
+          # XcodeGen reads JSON as a YAML subset. Preserve the upstream spec via Ruby YAML.
+          pathlib.Path(os.environ['RUNNER_TEMP'],'profiles.json').write_text(json.dumps(profiles))
+          for p in [pathlib.Path('ios/MoviePilot/Resources/Widgets.entitlements'),pathlib.Path('ios/MoviePilotWidgets/Widgets.entitlements')]:
+              d=plistlib.loads(p.read_bytes());d['com.apple.security.application-groups']=[os.environ['GROUP_ID']];p.write_bytes(plistlib.dumps(d))
+          export={'method':'app-store-connect','destination':'export','teamID':os.environ['TEAM_ID'],'signingStyle':'manual','signingCertificate':'Apple Distribution','provisioningProfiles':profiles,'manageAppVersionAndBuildNumber':False,'uploadSymbols':True}
+          pathlib.Path(os.environ['RUNNER_TEMP'],'ExportOptions.plist').write_bytes(plistlib.dumps(export))
+          PY
+          ruby -ryaml -rjson -e '
+            p = YAML.load_file("ios/project.yml")
+            profiles = JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/profiles.json"))
+            base = p.fetch("settings").fetch("base")
+            base["DEVELOPMENT_TEAM"] = ENV.fetch("TEAM_ID")
+            base["CODE_SIGN_STYLE"] = "Manual"
+            base["CURRENT_PROJECT_VERSION"] = Time.now.utc.strftime("%y%m.%d%H.%M%S")
+            {"MoviePilot" => ENV.fetch("APP_ID"), "MoviePilotWidgets" => ENV.fetch("APP_ID") + ".widgets"}.each do |target, bundle|
+              s = p.fetch("targets").fetch(target).fetch("settings").fetch("base")
+              s["PRODUCT_BUNDLE_IDENTIFIER"] = bundle
+              s["CODE_SIGN_IDENTITY"] = "Apple Distribution"
+              s["PROVISIONING_PROFILE_SPECIFIER"] = profiles.fetch(bundle)
+            end
+            File.write("ios/testflight.generated.yml", p.to_yaml)
+          '
+          xcodegen generate --spec ios/testflight.generated.yml
+      - name: Archive and export
+        run: |
+          set -euo pipefail
+          xcodebuild archive -project ios/MoviePilot.xcodeproj -scheme MoviePilot -configuration Release -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/MoviePilot.xcarchive"
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/MoviePilot.xcarchive" -exportPath "$RUNNER_TEMP/export" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+      - name: Upload to App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_ISSUER_ID"
+          export API_PRIVATE_KEYS_DIR="$RUNNER_TEMP"
+          xcrun altool --upload-app --type ios --file "$RUNNER_TEMP/export/MoviePilot.ipa" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+      - name: Remove signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/distribution.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/moviepilot.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/moviepilot-widgets.mobileprovision"
