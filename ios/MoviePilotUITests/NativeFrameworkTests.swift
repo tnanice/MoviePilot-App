@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 
 /// 隔离网络夹具只提供测试地址，不包含真实实例账号或凭据。
@@ -12,6 +13,134 @@ private struct NetworkFixtures: Decodable {
 /// 使用显式配置的实例验收原生框架与原业务 HTML；真实写入须另行开启并限定临时插件。
 @MainActor
 final class NativeFrameworkTests: XCTestCase {
+  /// 独立搜索保留来源入口，类型切换改变来源与站点，空关键词不允许提交。
+  func testStandaloneNativeSearchPage() throws {
+    let app = try signIn(captureScreens: false, remember: false)
+    let roots = app.tabBars["native-root-navigation"]
+    roots.buttons["仪表盘"].tap()
+    let bottom = app.buttons["native-bottom-action"]
+    XCTAssertTrue(bottom.waitForExistence(timeout: 15))
+    XCTAssertEqual(bottom.label, "搜索")
+    bottom.tap()
+    let page = app.tables["native-search-page"]
+    XCTAssertTrue(page.waitForExistence(timeout: 20), app.debugDescription)
+    let submit = app.buttons["native-search-submit"]
+    XCTAssertFalse(submit.isEnabled)
+    XCTAssertEqual(app.buttons["native-search-type-media-media"].label, "影视")
+    XCTAssertEqual(app.buttons["native-search-type-media-person"].label, "人物")
+    let field = app.searchFields["native-search-field"]
+    XCTAssertTrue(field.exists)
+    field.tap()
+    field.typeText("星际穿越")
+    app.buttons["native-search-type-media-media"].tap()
+    XCTAssertTrue(app.cells["native-search-item-source-media-douban"].exists)
+    XCTAssertTrue(submit.isEnabled)
+    attachScreen("搜索页-影视", app: app)
+    if ProcessInfo.processInfo.environment["MOVIEPILOT_E2E_SEARCH_WALLPAPER"] == "1" {
+      RunLoop.current.run(until: Date().addingTimeInterval(7))
+      XCTAssertFalse(app.webViews.staticTexts["设置 GitHub Token"].exists, "全局网页提示不得出现在原生搜索背景中")
+      attachScreen("搜索页-动态壁纸轮播", app: app)
+      selectTheme("浅色", app: app)
+      XCTAssertTrue(page.waitForExistence(timeout: 10))
+      XCTAssertFalse(app.webViews.staticTexts["404"].exists, "错误通知不得透过原生搜索材质显示")
+      attachScreen("搜索页-浅色", app: app)
+      selectTheme("深色", app: app)
+      XCTAssertTrue(page.waitForExistence(timeout: 10))
+    }
+    app.buttons["native-search-type-media-music"].tap()
+    XCTAssertTrue(
+      app.cells["native-search-item-source-music-musicbrainz"].waitForExistence(timeout: 5))
+    XCTAssertFalse(app.cells["native-search-item-source-media-douban"].exists)
+    attachScreen("搜索页-音乐", app: app)
+    app.buttons["native-search-type-media-collection"].tap()
+    XCTAssertTrue(app.cells["native-search-item-source-collection-themoviedb"].exists)
+    XCTAssertFalse(app.cells["native-search-item-source-person-douban"].exists)
+    app.buttons["native-search-type-media-person"].tap()
+    XCTAssertTrue(app.cells["native-search-item-source-person-musicbrainz"].exists)
+    page.buttons["资源"].tap()
+    XCTAssertTrue(
+      app.cells["native-search-item-native-site-torrent-11"].waitForExistence(timeout: 15))
+    app.buttons["native-search-type-resource-music"].tap()
+    XCTAssertTrue(
+      app.cells["native-search-item-native-site-music-22"].waitForExistence(timeout: 15))
+    XCTAssertFalse(app.cells["native-search-item-native-site-music-11"].exists)
+    attachScreen("搜索页-音乐资源", app: app)
+    app.buttons["native-search-type-resource-subtitle"].tap()
+    XCTAssertTrue(
+      app.cells["native-search-item-native-site-subtitle-11"].waitForExistence(timeout: 15))
+    page.buttons["站内"].tap()
+    XCTAssertFalse(app.cells["native-search-item-native-site-subtitle-11"].exists)
+    attachScreen("搜索页-站内", app: app)
+    app.buttons["返回"].tap()
+    XCTAssertTrue(app.navigationBars["仪表盘"].waitForExistence(timeout: 10))
+    roots.buttons["更多"].tap()
+    XCTAssertTrue(app.tables["more-menu"].waitForExistence(timeout: 10))
+    XCTAssertEqual(bottom.label, "搜索")
+    XCTAssertFalse(app.webViews.staticTexts["设置 GitHub Token"].exists, "更多页也不得透出全局网页提示")
+    XCTAssertFalse(app.webViews.staticTexts["404"].exists, "更多页不得透出网页错误通知")
+    attachScreen("更多页-纯壁纸背景", app: app)
+    bottom.tap()
+    XCTAssertTrue(page.waitForExistence(timeout: 10))
+    page.buttons["媒体"].tap()
+    app.buttons["native-search-type-media-media"].tap()
+    XCTAssertEqual(app.buttons["native-search-submit"].label, "搜索 影视")
+    app.buttons["native-search-submit"].tap()
+    XCTAssertTrue(page.waitForNonExistence(timeout: 15))
+    XCTAssertTrue(app.buttons["返回"].exists)
+    app.buttons["返回"].tap()
+    XCTAssertTrue(page.waitForExistence(timeout: 10))
+    app.buttons["返回"].tap()
+    XCTAssertTrue(app.tables["more-menu"].waitForExistence(timeout: 10))
+  }
+
+  /// 真实账号在同一文档中验收明暗壁纸、目录滚动、Sheet 归还与连续主入口切换。
+  func testMoreWallpaperContinuity() throws {
+    let app = try signIn(captureScreens: false, remember: false)
+    let roots = app.tabBars["native-root-navigation"]
+    settlePage(app)
+    app.buttons["操作菜单"].tap()
+    nativeUserItem("用户", app: app).tap()
+    nativeUserItem("主题", app: app).tap()
+    XCTAssertTrue(app.navigationBars["主题定制"].waitForExistence(timeout: 10))
+    let modes = ["浅色", "深色", "跟随系统"]
+    let original = modes.first { app.webViews.switches[$0].firstMatch.value as? String == "1" }
+    app.buttons["native-sheet-close"].tap()
+    defer { if let original { selectTheme(original, app: app) } }
+    for mode in ["深色", "浅色"] {
+      selectTheme(mode, app: app)
+      roots.buttons["仪表盘"].tap()
+      settlePage(app)
+      attachScreen("壁纸-\(mode)-仪表盘", app: app)
+      roots.buttons["更多"].tap()
+      XCTAssertTrue(app.tables["more-menu"].waitForExistence(timeout: 10))
+      settlePage(app)
+      attachScreen("壁纸-\(mode)-更多", app: app)
+      if mode == "深色" {
+        // 沿用真实实例的默认轮播时钟，不改服务端壁纸设置或另行驱动图片切换。
+        for index in 1...2 {
+          RunLoop.current.run(until: Date().addingTimeInterval(16))
+          attachScreen("壁纸-原生玻璃目录自动轮播-\(index)", app: app)
+        }
+      }
+      // 在目录上开启真实主题 Sheet，再将唯一 WebView 归还底页。
+      selectTheme(mode, app: app)
+      XCTAssertTrue(app.tables["more-menu"].cells.firstMatch.isHittable)
+      attachScreen("壁纸-\(mode)-Sheet归还", app: app)
+      app.tables["more-menu"].swipeUp()
+      attachScreen("壁纸-\(mode)-目录滚动", app: app)
+      for title in ["推荐", "更多", "探索", "更多", "仪表盘", "更多"] {
+        roots.buttons[title].tap()
+        XCTAssertTrue(app.navigationBars[title].waitForExistence(timeout: 10))
+      }
+      settlePage(app)
+      attachScreen("壁纸-\(mode)-连续切换后", app: app)
+    }
+    XCUIDevice.shared.orientation = .landscapeLeft
+    settlePage(app)
+    attachScreen("壁纸-横屏更多", app: app)
+    XCUIDevice.shared.orientation = .portrait
+  }
+
   /// 经用户授权才安装指定临时插件，并通过真实卡片菜单卸载，验证进度交接后导航仍可用。
   func testNativeTemporaryPluginInstallAndUninstall() throws {
     guard
@@ -848,7 +977,7 @@ final class NativeFrameworkTests: XCTestCase {
       attachScreen("账号主题-\(title)主界面", app: app)
       app.buttons["操作菜单"].tap()
       app.buttons["连接与显示"].tap()
-      app.buttons["更改服务地址"].tap()
+      app.buttons["切换服务"].tap()
       let address = app.textFields["MoviePilot 服务地址"]
       XCTAssertTrue(address.waitForExistence(timeout: 10))
       attachScreen("账号主题-\(title)连接", app: app)
@@ -899,7 +1028,7 @@ final class NativeFrameworkTests: XCTestCase {
     app.buttons["操作菜单"].tap()
     app.buttons["连接与显示"].tap()
     XCTAssertTrue(app.buttons["重新加载"].waitForExistence(timeout: 5))
-    XCTAssertTrue(app.buttons["更改服务地址"].exists)
+    XCTAssertTrue(app.buttons["切换服务"].exists)
     XCTAssertFalse(app.buttons["使用网页导航"].exists)
     attachScreen("原生专用-连接菜单", app: app)
     app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.28)).tap()
@@ -2258,6 +2387,75 @@ final class NativeFrameworkTests: XCTestCase {
     attachScreen("交互-跟随浅色的原生菜单", app: app)
     dismissOverlays(app)
     try await setSystemAppearance("dark")
+  }
+
+  /// 弹窗归还 WebView 后，前台及后台系统明暗切换都必须同步顶栏的真实滚动渐变。
+  func testTopScrollEdgeTracksSystemAppearanceAfterSheet() async throws {
+    guard
+      ProcessInfo.processInfo.environment["MOVIEPILOT_E2E_PROCESS_FIXTURE"]
+        == "http://127.0.0.1:5283"
+    else { throw XCTSkip("需要在专用模拟器启动带外观控制的本机合成服务。") }
+    var request = URLRequest(url: URL(string: "http://127.0.0.1:5283/__service/config")!)
+    request.httpMethod = "POST"
+    request.httpBody = try JSONSerialization.data(withJSONObject: ["mode": "ready", "reset": true])
+    let (_, response) = try await URLSession.shared.data(for: request)
+    XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+    try await setSystemAppearance("light")
+    let app = try signIn(captureScreens: false, remember: false)
+    defer { app.terminate() }
+    app.tabBars["native-root-navigation"].buttons["仪表盘"].tap()
+    // 真实打开再关闭主题 Sheet，覆盖旧实现将 underPageBackgroundColor 固定为浅色的路径。
+    selectTheme("跟随系统", app: app)
+    assertTopEdgeAppearance(app, dark: false, name: "顶栏渐变-初始浅色")
+    try await setSystemAppearance("dark")
+    assertTopEdgeAppearance(app, dark: true, name: "顶栏渐变-前台浅转深")
+    try await setSystemAppearance("light")
+    assertTopEdgeAppearance(app, dark: false, name: "顶栏渐变-前台深转浅")
+    XCUIDevice.shared.press(.home)
+    try await setSystemAppearance("dark")
+    app.activate()
+    assertTopEdgeAppearance(app, dark: true, name: "顶栏渐变-后台切深色后恢复")
+    app.tabBars["native-root-navigation"].buttons["更多"].tap()
+    try await setSystemAppearance("light")
+    assertTopEdgeAppearance(app, dark: false, name: "顶栏渐变-原生更多跟随浅色")
+    // 手动浅色仍以网页偏好为准，系统切深色不能覆盖用户选择。
+    selectTheme("浅色", app: app)
+    try await setSystemAppearance("dark")
+    assertTopEdgeAppearance(app, dark: false, name: "顶栏渐变-手动浅色优先")
+    selectTheme("跟随系统", app: app)
+    assertTopEdgeAppearance(app, dark: true, name: "顶栏渐变-恢复跟随系统")
+  }
+
+  /// 从标题左侧无文字区域读取最终画面；只约束明显明暗差异，保留系统材质的色彩变化。
+  private func assertTopEdgeAppearance(_ app: XCUIApplication, dark: Bool, name: String) {
+    settlePage(app)
+    let screenshot = XCUIScreen.main.screenshot()
+    let attachment = XCTAttachment(screenshot: screenshot)
+    attachment.name = name
+    attachment.lifetime = .keepAlways
+    add(attachment)
+    guard let image = screenshot.image.cgImage else {
+      XCTFail("无法读取系统截图")
+      return
+    }
+    let scale = CGFloat(image.width) / app.frame.width
+    let bar = app.navigationBars.firstMatch.frame
+    let area = CGRect(x: 24 * scale, y: bar.midY * scale, width: 8 * scale, height: 8 * scale)
+    guard let sample = image.cropping(to: area) else {
+      XCTFail("顶栏采样区域必须位于系统截图内")
+      return
+    }
+    var pixel = [UInt8](repeating: 0, count: 4)
+    let context = CGContext(
+      data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    context?.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+    let brightness = pixel.prefix(3).reduce(0) { $0 + Double($1) } / (3 * 255)
+    if dark {
+      XCTAssertLessThan(brightness, 0.35, "\(name)：顶栏仍保留浅色底，RGB=\(pixel)")
+    } else {
+      XCTAssertGreaterThan(brightness, 0.65, "\(name)：顶栏仍保留深色底，RGB=\(pixel)")
+    }
   }
 
   /// 切换模拟器系统明暗，验证固定玻璃主题与系统浮层同步，而非修改网页主题偏好。
@@ -3961,6 +4159,77 @@ final class NativeFrameworkTests: XCTestCase {
     let (data, _) = try await URLSession.shared.data(
       from: URL(string: "http://127.0.0.1:5248/__standalone/state")!)
     return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+  }
+
+  /// 真实卡片选站搜索覆盖不同所属入口，归还绘制与路由切换交错也不能进入恢复页。
+  func testMediaSearchSheetRouteRace() async throws {
+    guard ProcessInfo.processInfo.environment["MOVIEPILOT_E2E_SHEET_RACE"] == "1" else {
+      throw XCTSkip("仅运行显式本机搜索回归夹具")
+    }
+    let base = URL(string: "http://127.0.0.1:5256")!
+    /// 状态仅来自本机合成页面的 DOM 几何与搜索请求计数。
+    func state() async throws -> [String: Any] {
+      let (data, _) = try await URLSession.shared.data(
+        from: base.appendingPathComponent("__sheet/state"))
+      return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+    let app = try launchCardMenuApp(server: base.absoluteString)
+    XCTAssertTrue(
+      app.tabBars["native-root-navigation"].waitForExistence(timeout: 45), app.debugDescription)
+    /// 等待当前可见卡片及其原始搜索按钮，坐标使用真实 DOM 与当前 WebView frame。
+    func point(_ key: String) async throws -> XCUICoordinate {
+      for _ in 0..<100 {
+        let page = try await state()["page"] as? [String: Any]
+        if (page?["hash"] as? String)?.contains("/browse/") == true,
+          let rect = page?[key] as? [String: Double], let x = rect["x"], let y = rect["y"],
+          let width = rect["width"], let height = rect["height"], width > 0, height > 0
+        {
+          return app.webViews.firstMatch.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: x + width / 2, dy: y + height / 2))
+        }
+        try await Task.sleep(for: .milliseconds(150))
+      }
+      let last = try await state()
+      XCTFail("真实媒体卡片未就绪: \(last)\n\(app.debugDescription)")
+      throw NSError(domain: "SheetRace", code: 1)
+    }
+    let sources = ["/recommend", "/discover", "/apps"]
+    let titles = ["推荐", "探索", "更多"]
+    for index in 0..<12 {
+      var request = URLRequest(url: base.appendingPathComponent("__sheet/route"))
+      request.httpMethod = "POST"
+      request.httpBody = try JSONSerialization.data(withJSONObject: [
+        "source": sources[index % sources.count], "delay": index >= 6,
+      ])
+      _ = try await URLSession.shared.data(for: request)
+      let card = try await point("card")
+      XCTAssertTrue(
+        app.tabBars["native-root-navigation"].buttons[titles[index % titles.count]].isSelected)
+      if index.isMultiple(of: 2) {
+        card.tap()
+        try await point("search").tap()
+      } else {
+        card.press(forDuration: 1)
+        XCTAssertTrue(app.buttons["搜索"].waitForExistence(timeout: 8), app.debugDescription)
+        app.buttons["搜索"].tap()
+      }
+      let sheet = app.otherElements["native-web-sheet"]
+      XCTAssertTrue(sheet.waitForExistence(timeout: 10), app.debugDescription)
+      app.webViews.staticTexts["合成站点 2"].tap()
+      app.webViews.buttons["搜索"].tap()
+      XCTAssertTrue(sheet.waitForNonExistence(timeout: 10), app.debugDescription)
+      XCTAssertFalse(app.staticTexts["暂时无法打开 MoviePilot"].exists, app.debugDescription)
+      let current = try await state()
+      let searches = try XCTUnwrap(current["searches"] as? [[String: Any]])
+      XCTAssertEqual(searches.count, index + 1)
+      XCTAssertEqual(searches.last?["sites"] as? [String], ["1"])
+      let page = try XCTUnwrap(current["page"] as? [String: Any])
+      XCTAssertEqual(page["hash"] as? String, "#/resource")
+      XCTAssertEqual(page["sheet"] as? Bool, false)
+      XCTAssertTrue(app.tabBars["native-root-navigation"].buttons["更多"].isSelected)
+      XCTAssertGreaterThanOrEqual(current["delayed"] as? Int ?? 0, max(0, index - 5))
+    }
+    attachScreen("媒体卡片搜索-连续导航归还", app: app)
   }
 
   /// 合成实例允许首次登录或已保存会话恢复，不把后者误判成登录表单缺失。

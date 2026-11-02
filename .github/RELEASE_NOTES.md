@@ -1,17 +1,20 @@
-MoviePilot iOS 1.0.4，适配 iOS 桌面图标外观并支持 HTTP 实例连接。支持 iOS 17+，iOS 26+ 使用系统 Liquid Glass。
+MoviePilot iOS 1.1.0，新增独立原生全局搜索页，统一搜索入口与实时壁纸玻璃背景。支持 iOS 17+，iOS 26+ 使用系统 Liquid Glass。
 
 ### 更新内容
 
-- 新增浅色桌面图标，保留深色图标，由 iOS 主屏幕“自定义”中的外观选项切换。
-- 新增专用单色图标资源，使用“色调”时跟随桌面选定的颜色。
-- 实例连接支持 HTTP 和 HTTPS，公网域名、IP 与局域网地址均可使用；同步适配原生登录、内嵌页面与小组件。
+- 全局搜索改为独立原生页面，提供媒体、资源和站内搜索；类型统一为“影视、音乐、合集、人物”。不同类型显示各自可用的数据源，资源、音乐资源、字幕分别保留站点选择。
+- 仪表盘、推荐、探索的原右下角动作移入右上角“当前页面”，右下角改为搜索入口；其他页面保留原有动作，没有动作时显示搜索，包括原生“更多”页面。
+- 搜索与更多共用实时动态壁纸和原生玻璃材质，排除背景网页的全局提示层，修复明暗切换后离屏分组保留旧材质的问题。
+- 搜索权限、历史关键词和结果跳转继续复用原有业务逻辑，结果页可返回搜索，再回到来源页面。
+
+### 前端兼容
+
+独立搜索需要同时更新至本次重建的 [MoviePilot-Frontend v3.2.4](https://github.com/jxxghp/MoviePilot-Frontend/releases/tag/v3.2.4) 或更新的兼容版本。版本号保持 3.2.4，请重新下载并部署最新构建产物。旧前端继续使用原搜索浮层；更新后的前端仍兼容旧 App 与普通浏览器。
 
 ### 安装
 
-下载 `MoviePilot-1.0.4-unsigned.ipa`，使用自己的 Apple 账户通过 SideStore、AltStore Classic 或 Sideloadly 重签后覆盖安装。小组件需要同时重签扩展并保留共享组。免费签名通常 7 天有效。
-
-建议同步更新至 MoviePilot-Frontend **3.2.1** 或更新的兼容前端，前端页面修复在实例资源同步后生效。
+下载 `MoviePilot-1.1.0-unsigned.ipa`，使用自己的 Apple 账户通过 SideStore、AltStore Classic 或 Sideloadly 重签后覆盖安装。小组件需要同时重签扩展并保留共享组。免费签名通常 7 天有效。
 
 [安装与续签](https://github.com/jxxghp/MoviePilot-App/blob/main/guides/install.md) · [小组件](https://github.com/jxxghp/MoviePilot-App/blob/main/guides/widgets.md) · [通知配置](https://github.com/jxxghp/MoviePilot-App/blob/main/guides/notifications.md)
 
-Release 同时提供 `SHA256SUMS`。本包使用 iPhoneOS SDK 和 arm64 架构构建；iPhone 完整系统集成验收仍在进行。
+Release 同时提供 `SHA256SUMS`。本包使用 iPhoneOS SDK 和 arm64 架构构建；本次交互已通过合成数据的 iOS 26.1 模拟器验收，覆盖类型切换、壁纸轮播、明暗主题、背景提示隔离与结果返回。未将其视为真实站点搜索或完整真机验收。

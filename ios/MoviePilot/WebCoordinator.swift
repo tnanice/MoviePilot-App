@@ -28,6 +28,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
   private var session = ChromeSession()
   private var timeout: Timer?
   private var startupTimeout: Timer?
+  private var startupHint: Timer?
   private var documentID = UUID()
   private var contentReady = false
   private var startupPending = true
@@ -49,6 +50,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
   private var downloadWebViews: [ObjectIdentifier: WKWebView] = [:]
   private var authentication: AuthenticationResult?
   private let onAuthenticationRequired: () -> Void
+  private var usageLookupStarted = false
   private var notificationLookupStarted = false
   private var notificationNavigationAvailable = false
   private var widgetsNegotiated = false
@@ -192,7 +194,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     standaloneMenus.invalidate()
     if NotificationService.shared.coordinator === self { NotificationService.shared.attach(nil) }
     timeout?.invalidate()
-    startupTimeout?.invalidate()
+    cancelStartupTimers()
     startupPending = false
     pendingProcessRecovery = false
     documentID = UUID()
@@ -236,7 +238,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     documentID = UUID()
     WidgetService.shared.endSession(instanceId: instance.id, clear: false)
     timeout?.invalidate()
-    startupTimeout?.invalidate()
+    cancelStartupTimers()
     cancelCommands()
     pendingProcessRecovery = false
     automaticRecoveryAttempted = automatically
@@ -257,7 +259,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     documentID = UUID()
     WidgetService.shared.endSession(instanceId: instance.id, clear: false)
     timeout?.invalidate()
-    startupTimeout?.invalidate()
+    cancelStartupTimers()
     cancelCommands()
     session.failed()
     pendingProcessRecovery = true
@@ -294,7 +296,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     if value == "background", lifecycle != value { automaticRecoveryAttempted = false }
     lifecycle = value
     timeout?.invalidate()
-    startupTimeout?.invalidate()
+    cancelStartupTimers()
     if value == "active", pendingProcessRecovery {
       resumeContentRecovery()
       return
@@ -324,7 +326,8 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
   /// 画面身份包含精确路由和主题；不同文档、账号或弹层之间不复用上一帧。
   private var resumePreviewContext: String? {
     guard session.phase == .nativeNavigation, let id = session.sessionId,
-      let snapshot = session.snapshot, snapshot.chrome.content != .menu
+      let snapshot = session.snapshot, snapshot.chrome.content != .menu,
+      snapshot.chrome.content != .search
     else { return nil }
     return [
       documentID.uuidString, id, snapshot.route.fullPath, snapshot.chrome.theme.rawValue,
@@ -563,6 +566,46 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     return reply.data ?? [:]
   }
 
+  /// 在已认证文档中读取管理员统计开关；拒绝、缺失和旧后端均不触发上报。
+  private func reportUsageIfEnabled() {
+    guard !usageLookupStarted, lifecycle == "active", let url = webView.url,
+      instance.address.contains(url), session.phase == .nativeNavigation
+    else { return }
+    usageLookupStarted = true
+    let document = documentID
+    let endpoint = instance.address.url.appendingPathComponent("api/v1/system/env").absoluteString
+    Task { [weak self] in
+      guard let self else { return }
+      let script = """
+        if (location.origin !== new URL(endpoint).origin) return null;
+        const auth = JSON.parse(localStorage.getItem('auth') || 'null');
+        if (!auth?.token) return null;
+        const response = await fetch(endpoint, {
+          headers: {Authorization: 'Bearer ' + auth.token}, credentials: 'same-origin',
+          cache: 'no-store', signal: AbortSignal.timeout(15000)
+        });
+        if (!response.ok) return null;
+        const body = await response.json();
+        if (body.success !== true || body.data?.USAGE_STATISTIC_SHARE !== true) return null;
+        return body.data.MP_SERVER_HOST || 'https://movie-pilot.org';
+        """
+      let host: String? = await withCheckedContinuation { continuation in
+        self.webView.callAsyncJavaScript(
+          script, arguments: ["endpoint": endpoint],
+          in: nil, in: .page
+        ) { result in
+          continuation.resume(returning: (try? result.get()) as? String)
+        }
+      }
+      guard let host, self.documentID == document, self.lifecycle == "active",
+        self.session.phase == .nativeNavigation,
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+          as? String
+      else { return }
+      await UsageReporting.shared.report(enabled: true, host: host, version: version)
+    }
+  }
+
   /// 绑定状态查询只在每次已认证文档中尝试一次，旧后端不会被不断重试。
   private func refreshNotificationContext() {
     guard !notificationLookupStarted else { return }
@@ -707,6 +750,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
         timeout?.invalidate()
         shell?.apply(snapshot)
         layoutChanged()
+        reportUsageIfEnabled()
         refreshNotificationContext()
         refreshWidgetContext()
         WidgetService.shared.resumePending(with: self)
@@ -747,6 +791,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
       WidgetService.shared.endSession(instanceId: instance.id, clear: true)
       shell?.clearNavigationPreviews()
       lastConfirmedURL = nil
+      usageLookupStarted = false
       notificationLookupStarted = false
       NotificationService.shared.attach(self)
       let interruptedHandoff = !commandCompletions.isEmpty
@@ -827,7 +872,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     WidgetService.shared.endSession(instanceId: instance.id, clear: false)
     pendingProcessRecovery = false
     timeout?.invalidate()
-    startupTimeout?.invalidate()
+    cancelStartupTimers()
     startupPending = false
     cancelCommands()
     session.failed()
@@ -847,6 +892,7 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
     documentID = UUID()
     WidgetService.shared.endSession(instanceId: instance.id, clear: false)
     contentReady = false
+    usageLookupStarted = false
     notificationLookupStarted = false
     notificationNavigationAvailable = false
     widgetsNegotiated = false
@@ -897,14 +943,28 @@ final class WebCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDown
       session.phase == .nativeNavigation
     else { return }
     startupPending = false
-    startupTimeout?.invalidate()
+    cancelStartupTimers()
     shell?.setLoading(false)
   }
 
-  /// 只累计本次前台启动的等待，加载失败保留明确出口，不让静态画面永久遮住应用。
-  private func armStartupTimeout() {
+  /// 文档结束、启动完成或退到后台时同时撤销状态提示和最终期限。
+  private func cancelStartupTimers() {
     startupTimeout?.invalidate()
+    startupTimeout = nil
+    startupHint?.invalidate()
+    startupHint = nil
+  }
+
+  /// 前台等待十秒后提供重试入口，四十五秒后仍未就绪则转入明确的恢复页。
+  private func armStartupTimeout() {
+    cancelStartupTimers()
     guard lifecycle == "active", startupPending else { return }
+    startupHint = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+      MainActor.assumeIsolated {
+        guard let self, self.startupPending, self.lifecycle == "active" else { return }
+        self.shell?.showStartupWait()
+      }
+    }
     startupTimeout = Timer.scheduledTimer(withTimeInterval: 45, repeats: false) { [weak self] _ in
       MainActor.assumeIsolated {
         guard let self, self.startupPending else { return }

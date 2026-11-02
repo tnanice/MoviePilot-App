@@ -47,12 +47,12 @@ open ios/MoviePilot.xcodeproj
 ## 构建未签名 IPA
 
 ```sh
-bash scripts/build-ipa.sh 1.0.4
+bash scripts/build-ipa.sh 1.1.0
 ```
 
-从仓库根目录执行，产物位于 `artifacts/MoviePilot-1.0.4-unsigned.ipa`，同时生成 `SHA256SUMS`。脚本使用真机 iPhoneOS SDK 和 arm64 架构，校验版本、ZIP 及 Mach-O 平台；安装者仍须自行重签。
+从仓库根目录执行，产物位于 `artifacts/MoviePilot-1.1.0-unsigned.ipa`，同时生成 `SHA256SUMS`。脚本使用真机 iPhoneOS SDK 和 arm64 架构，校验版本、ZIP 及 Mach-O 平台；安装者仍须自行重签。
 
-工程当前版本为 1.0.4、构建号为 1。发布新版本时先更新 `ios/project.yml` 与已提交工程中的版本号，再将 `v主版本.次版本.修订版本` 标签推到 GitHub。`Release IPA` 会复用现有检查，成功后构建对应版本并发布 IPA 和校验文件。
+工程当前版本为 1.1.0、构建号为 1。发布新版本时先更新 `ios/project.yml` 与已提交工程中的版本号，再将 `v主版本.次版本.修订版本` 标签推到 GitHub。`Release IPA` 会复用现有检查，成功后构建对应版本并发布 IPA 和校验文件。
 
 同版本修复在 `main` 的 Actions → `Release IPA` → `Run workflow` 中操作：填写现有标签，勾选同版本重建确认。检查与打包通过后，工作流将该标签和 Release 资产更新为本次 `main` 源码；若构建期间主分支或标签变化则停止发布。普通标签发布仍拒绝覆盖已有 Release。用户从同一 Release 重新下载 IPA 后覆盖安装即可。
 
@@ -83,6 +83,47 @@ TEST_RUNNER_MOVIEPILOT_E2E_SERVICE_WAIT=1 xcodebuild test \
 
 该验收覆盖 HTTP 暂不可用、连接中断、自动恢复登录与 Keychain 会话、后台暂停、手动重试、切换地址、初始化与损坏响应，以及密码不自动重发。合成服务不连接真实后端。
 
+多服务和密码记忆回归复用同一夹具，在两个终端分别运行：
+
+```sh
+python3 scripts/service-startup-fixture.py --frontend /path/to/frontend/dist --port 5294 --profile a
+python3 scripts/service-startup-fixture.py --frontend /path/to/frontend/dist --port 5295 --profile b
+```
+
+两个服务各自校验固定的合成账号；在专用模拟器上设置 `TEST_RUNNER_MOVIEPILOT_E2E_SERVER_PROFILES=1`，执行 `-only-testing:MoviePilotUITests/ServerProfileTests`。用例覆盖地址列表、逐服务恢复令牌和密码、回填后直接登录、重启、OTP 不持久化、失败登录不覆盖密码、关闭记忆、删除服务，以及横屏最大辅助功能字号。核心测试另用合成 Security 响应检查本机钥匙串保护级别和操作范围，不读写开发者实际凭据。
+
+顶栏渐变的系统明暗回归可复用此服务，将端口设为 `5283`，并通过 `--appearance-simulator 模拟器UUID` 明确允许改变专用模拟器的系统外观。该参数仅启用回环测试端点，不改变 App 桥接协议。运行前设置 `DEVELOPER_DIR` 指向完整 Xcode：
+
+```sh
+python3 scripts/service-startup-fixture.py --frontend /path/to/frontend/dist \
+  --port 5283 --appearance-simulator 你的模拟器UUID
+# 另开终端运行；使用合成账号，不连接真实实例。
+TEST_RUNNER_MOVIEPILOT_E2E_SERVER=http://127.0.0.1:5283 \
+TEST_RUNNER_MOVIEPILOT_E2E_PROCESS_FIXTURE=http://127.0.0.1:5283 \
+TEST_RUNNER_MOVIEPILOT_E2E_USERNAME=startup-fixture \
+TEST_RUNNER_MOVIEPILOT_E2E_PASSWORD=fixture-only \
+xcodebuild test -project ios/MoviePilot.xcodeproj -scheme MoviePilot \
+  -destination 'platform=iOS Simulator,id=你的模拟器UUID' \
+  -only-testing:MoviePilotUITests/NativeFrameworkTests/testTopScrollEdgeTracksSystemAppearanceAfterSheet \
+  CODE_SIGN_IDENTITY=-
+```
+
+此用例在真实主题 Sheet 归还 WebView 后检查顶栏截图像素，覆盖前台浅深切换、后台切换后恢复、原生更多目录和手动主题优先。测试结束后按需恢复专用模拟器原来的系统外观。
+
+媒体卡片选站搜索回归复用兼容前端产物，使用固定合成媒体和站点，不连接真实后端。每次验收先重新启动服务以清空搜索计数：
+
+```sh
+python3 scripts/sheet-navigation-fixture.py --frontend /path/to/frontend/dist
+# 另开终端，在已启动的专用模拟器运行。
+TEST_RUNNER_MOVIEPILOT_E2E_SHEET_RACE=1 xcodebuild test \
+  -project ios/MoviePilot.xcodeproj -scheme MoviePilot \
+  -destination 'platform=iOS Simulator,id=你的模拟器UUID' \
+  -only-testing:MoviePilotUITests/NativeFrameworkTests/testMediaSearchSheetRouteRace \
+  CODE_SIGN_IDENTITY=-
+```
+
+用例从推荐、探索和更多入口交替通过卡片按钮与长按菜单发起搜索，连续验证 12 次站点筛选和资源页跳转。后半段扩大归还绘制确认与路由切换交错的窗口，检查导航未进入恢复页、Sheet 样式已清除且资源页属于当前入口。
+
 ```text
 ios/          UIKit / WKWebView App、资源与 UI 测试
 Sources/      可独立编译的 Swift 核心
@@ -95,3 +136,23 @@ scripts/      本地验证入口
 桌面图标在 `AppIcon.appiconset` 中配置 Any、Dark、Tinted 三种外观。浅色图标复用前端的 `scripts/assets/moviepilot-logo-master.png` 和 `scripts/generate-pwa-icons.mjs` 中的 `createSquareIcon`，按 1024×1024、0.76 标识比例生成；深色图标保留原资源，着色图标以同一母版、尺寸和比例生成黑底灰度图，最终色调由 iOS 处理。图标外观及兼容范围见[连接与兼容性](../guides/connection.md)。
 
 仍需完成真实 iPhone、横屏/键盘完整矩阵、文件/外链、前后台与内容进程恢复、OTP/签名 Keychain 和 APNs 的完整验收。Android 延后规划。
+
+独立搜索页面可使用隔离服务与当前前端开发服务器验收，不连接真实后端，也无需反复构建前端：
+
+```sh
+# 终端一：合成 API；可选 --wallpaper /path/to/a.jpg --wallpaper /path/to/b.jpg 验证轮播；
+# 加 --background-notices 主动触发 GitHub 横幅和主题保存错误通知，验证背景隔离。
+../MoviePilot/.venv/bin/python scripts/search-page-fixture.py --frontend ../MoviePilot-Frontend/dist
+# 终端二：在 MoviePilot-Frontend 运行。
+MOVIEPILOT_DEV_PROXY_TARGET=http://127.0.0.1:5296 yarn dev --host 127.0.0.1 --port 5297 --strictPort
+# 终端三：在 App 仓库运行，指定独立模拟器。
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+TEST_RUNNER_MOVIEPILOT_E2E_SERVER=http://localhost:5297 \
+TEST_RUNNER_MOVIEPILOT_E2E_USERNAME=startup-fixture \
+TEST_RUNNER_MOVIEPILOT_E2E_PASSWORD=fixture-only \
+xcodebuild test -project ios/MoviePilot.xcodeproj -scheme MoviePilot \
+  -destination 'platform=iOS Simulator,id=你的模拟器UUID' \
+  -only-testing:MoviePilotUITests/NativeFrameworkTests/testStandaloneNativeSearchPage CODE_SIGN_IDENTITY=-
+```
+
+额外设置 `TEST_RUNNER_MOVIEPILOT_E2E_SEARCH_WALLPAPER=1` 时，用例等待一轮壁纸轮换、捕获页面，并通过主题面板切换浅色和深色；传入的图片仅作为本机测试背景，不提交或上传。来源与站点均为合成数据，不能代替真实站点搜索验收。
